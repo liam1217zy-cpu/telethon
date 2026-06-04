@@ -1,0 +1,25 @@
+# Telegram sessions & secrets
+*.session
+*.session-journal
+.env
+.env.*
+
+# Runtime data
+sent_list.txt
+daily_send_counter.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python-version
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Streamlit
+.streamlit/secrets.toml
