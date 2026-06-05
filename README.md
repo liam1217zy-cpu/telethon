@@ -24,7 +24,7 @@ streamlit run app.py
 
 Open `http://localhost:8501`.
 
-## Excel format
+## Customer list format (CSV or Excel)
 
 | Column | Purpose |
 |--------|---------|
@@ -37,7 +37,7 @@ Aliases accepted: `mobile`, `contact number`, `phone number`, etc.
 ## Sender vs customer phone
 
 - **Form field “Your Telegram login phone”** — the account that sends messages.
-- **Excel `phone` column** — each customer’s number.
+- **List `phone` column** — each customer’s number (CSV, `.xlsx`, `.xls`, `.xlsm`).
 
 ## Anti-ban defaults
 

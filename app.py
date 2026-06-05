@@ -74,8 +74,19 @@ def normalize_phone(raw: Any) -> str:
     return s
 
 
+def read_customer_file(uploaded_file) -> pd.DataFrame:
+    """Load customer list from CSV or Excel (.xlsx, .xls, .xlsm, etc.)."""
+    uploaded_file.seek(0)
+    name = (uploaded_file.name or "").lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+    if name.endswith(".xls"):
+        return pd.read_excel(uploaded_file, engine="xlrd")
+    return pd.read_excel(uploaded_file)
+
+
 def normalize_excel_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Map Excel columns to: username (label), name (greeting), phone (send target)."""
+    """Map spreadsheet columns to: username (label), name (greeting), phone (send target)."""
     alias_map = {
         "username": (
             "username",
@@ -411,14 +422,14 @@ def main() -> None:
         type=["png", "jpg", "jpeg", "webp"],
     )
     excel_file = st.file_uploader(
-        "Customer Excel",
-        type=["xlsx", "xls"],
-        help="Columns: username (your reference), name (greeting), phone (send target)",
+        "Customer list (Excel / CSV)",
+        type=["csv", "xlsx", "xls", "xlsm"],
+        help="CSV or Excel (.xlsx, .xls, .xlsm). Columns: username, name, phone",
     )
 
     if excel_file is not None:
         try:
-            preview = normalize_excel_columns(pd.read_excel(excel_file))
+            preview = normalize_excel_columns(read_customer_file(excel_file))
             st.caption(
                 f"Loaded **{len(preview)}** rows · sends via **phone** · **name** used in message"
             )
@@ -429,7 +440,7 @@ def main() -> None:
                     "No phone column found. Use: phone, mobile, contact number, phone number, etc."
                 )
         except Exception as exc:
-            st.warning(f"Excel preview failed: {exc}")
+            st.warning(f"File preview failed: {exc}")
 
     with st.form("send_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
@@ -489,7 +500,7 @@ def main() -> None:
         st.warning("Please enter api_id, api_hash, and your login phone.")
         return
     if excel_file is None:
-        st.warning("Please upload the customer Excel file.")
+        st.warning("Please upload the customer list file (Excel or CSV).")
         return
 
     phone_norm = normalize_phone(phone)
@@ -500,14 +511,14 @@ def main() -> None:
     st.session_state.last_phone = phone_norm
 
     try:
-        df = normalize_excel_columns(pd.read_excel(excel_file))
+        df = normalize_excel_columns(read_customer_file(excel_file))
     except Exception as exc:
-        st.error(f"Excel parse error: {exc}")
+        st.error(f"File parse error: {exc}")
         return
 
     if "phone" not in df.columns:
         st.error(
-            "Excel must include a customer phone column "
+            "File must include a customer phone column "
             "(phone, mobile, contact number, phone number, etc.)."
         )
         return
