@@ -148,6 +148,12 @@ def row_customer_phone(row: pd.Series) -> str:
     return normalize_phone(row.get("phone"))
 
 
+def is_effectively_empty_row(row: pd.Series) -> bool:
+    # When Excel has leftover formatting, pandas may load many "blank" rows
+    # full of NaN. Treat those as non-data and skip silently.
+    return not (row_customer_phone(row) or row_name(row) or row_username(row))
+
+
 def format_customer_label(row: pd.Series) -> str:
     parts: list[str] = []
     uname = row_username(row)
@@ -357,9 +363,10 @@ async def run_send_pipeline(
                 break
 
             if not row_customer_phone(row):
-                log_callback(
-                    f"Row {idx + 1}: skipped (no phone) — {format_customer_label(row)}"
-                )
+                if not is_effectively_empty_row(row):
+                    log_callback(
+                        f"Row {idx + 1}: skipped (no phone) — {format_customer_label(row)}"
+                    )
                 continue
 
             target_key = target_key_from_row(row)
