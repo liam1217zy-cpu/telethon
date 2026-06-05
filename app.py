@@ -6,6 +6,7 @@ Anti-ban: slow sends, daily caps, dedup list, halt on official flood signals.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import random
@@ -54,10 +55,15 @@ class SendHalt(Exception):
 
 
 def build_message(name: str, signature: str, promo_body: str) -> str:
+    """Greeting uses Excel `name`; `username` is never included in the message."""
     display_name = (name or "Customer").strip()
     sig = (signature or "Support").strip()
     body = (promo_body or "").strip()
-    return f"Hi Mr/Ms {display_name}! This is {sig}.\n\n{body}"
+    lines = [f"Hi Mr/Ms {display_name}!", f"This is {sig}."]
+    if body:
+        lines.append("")
+        lines.append(body)
+    return "\n".join(lines)
 
 
 def normalize_phone(raw: Any) -> str:
@@ -221,6 +227,7 @@ async def resolve_and_send(
     row: pd.Series,
     message: str,
     banner_bytes: Optional[bytes],
+    banner_name: Optional[str],
 ) -> None:
     contact = row_customer_phone(row)
     if not contact:
@@ -230,7 +237,11 @@ async def resolve_and_send(
 
     try:
         if banner_bytes:
-            await client.send_file(entity, banner_bytes, caption=message)
+            # If we pass raw bytes, Telethon may treat it as a generic document.
+            # Wrap bytes with a filename so Telegram renders it as a photo.
+            buf = io.BytesIO(banner_bytes)
+            buf.name = banner_name or "banner.jpg"
+            await client.send_file(entity, buf, caption=message, force_document=False)
         else:
             await client.send_message(entity, message)
     except PeerFloodError as exc:
@@ -297,6 +308,7 @@ async def run_send_pipeline(
     promo_body: str,
     df: pd.DataFrame,
     banner_bytes: Optional[bytes],
+    banner_name: Optional[str],
     tg_code: str,
     tg_password: str,
     phone_code_hash: Optional[str],
@@ -346,7 +358,7 @@ async def run_send_pipeline(
 
             success = False
             try:
-                await resolve_and_send(client, row, message, banner_bytes)
+                await resolve_and_send(client, row, message, banner_bytes, banner_name)
                 success = True
                 fail_streak = 0
                 log_callback(f"Sent to {label}")
@@ -434,17 +446,26 @@ def main() -> None:
     excel_file = st.file_uploader(
         "Customer list (Excel / CSV)",
         type=["csv", "xlsx", "xls", "xlsm"],
-        help="CSV or Excel (.xlsx, .xls, .xlsm). Columns: username, name, phone",
+        help="phone = send target · name = greeting (Hi Mr/Ms …) · username = your reference only",
     )
 
+    preview: Optional[pd.DataFrame] = None
     if excel_file is not None:
         try:
             preview = normalize_excel_columns(read_customer_file(excel_file))
             st.caption(
-                f"Loaded **{len(preview)}** rows · sends via **phone** · **name** used in message"
+                f"Loaded **{len(preview)}** rows · **phone** sends · **name** greets · "
+                f"**username** logs only"
             )
             show_cols = [c for c in ("username", "name", "phone") if c in preview.columns]
             st.dataframe(preview[show_cols].head(8), use_container_width=True)
+            if "name" in preview.columns and len(preview) > 0:
+                sample_name = row_name(preview.iloc[0]) or "Customer"
+                st.markdown("**Message example (first row):**")
+                st.code(
+                    build_message(sample_name, "Your Name", "Your promotion text…"),
+                    language=None,
+                )
             if "phone" not in preview.columns:
                 st.error(
                     "No phone column found. Use: phone, mobile, contact number, phone number, etc."
@@ -469,11 +490,15 @@ def main() -> None:
                 help="Your personal Telegram number — not customer numbers from Excel.",
             )
         with col2:
-            signature = st.text_input("Your name / signature", placeholder="Alex")
+            signature = st.text_input(
+                "Your name",
+                placeholder="Alex",
+                help='Appears as: "This is Alex."',
+            )
             promo_body = st.text_area(
-                "Message body",
+                "Message content",
                 height=160,
-                placeholder="Promotion or notice text for customers…",
+                placeholder="Promotion or notice text — sent after the greeting.",
             )
 
         submitted = st.form_submit_button("Start sending", type="primary")
@@ -536,8 +561,10 @@ def main() -> None:
         st.warning("No name column found — messages will use greeting 'Customer'.")
 
     banner_bytes: Optional[bytes] = None
+    banner_name: Optional[str] = None
     if banner_file is not None:
         banner_bytes = banner_file.read()
+        banner_name = getattr(banner_file, "name", None)
 
     if submitted:
         st.session_state.send_logs = []
@@ -550,6 +577,7 @@ def main() -> None:
             "promo_body": promo_body,
             "df": df,
             "banner_bytes": banner_bytes,
+            "banner_name": banner_name,
         }
 
     job = st.session_state.get("job_params")
@@ -583,6 +611,7 @@ def main() -> None:
                 promo_body=job["promo_body"],
                 df=job["df"],
                 banner_bytes=job["banner_bytes"],
+                banner_name=job.get("banner_name"),
                 tg_code=tg_code,
                 tg_password=tg_pwd,
                 phone_code_hash=phone_code_hash,
