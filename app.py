@@ -358,6 +358,9 @@ async def run_send_pipeline(
                     await asyncio.sleep(wait)
                 log_callback("Emergency stop to protect your account. Retry tomorrow.")
                 break
+            except ValueError as exc:
+                # Entity not found — phone not on Telegram or not reachable; skip silently
+                log_callback(f"Skipped {label}: {exc}")
             except Exception as exc:
                 fail_streak += 1
                 log_callback(f"Failed: {type(exc).__name__} — {exc}")
