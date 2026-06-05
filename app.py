@@ -258,30 +258,35 @@ async def ensure_client_authorized(
     phone: str,
     tg_code: str,
     tg_password: str,
+    phone_code_hash: Optional[str],
     log_callback,
-) -> bool:
+) -> tuple[bool, Optional[str]]:
     if await client.is_user_authorized():
         log_callback("Using saved session — already signed in")
-        return True
+        return True, None
 
     if not tg_code:
-        await client.send_code_request(phone)
+        sent = await client.send_code_request(phone)
         log_callback("Verification code sent. Enter it below, then click Confirm & Send.")
-        return False
+        return False, sent.phone_code_hash
 
     try:
-        await client.sign_in(phone, tg_code.strip())
+        await client.sign_in(
+            phone,
+            tg_code.strip(),
+            phone_code_hash=phone_code_hash,
+        )
     except SessionPasswordNeededError:
         if not tg_password:
             log_callback("2FA required. Enter password, then click Confirm & Send.")
-            return False
+            return False, phone_code_hash
         await client.sign_in(password=tg_password.strip())
     except PhoneCodeInvalidError:
         log_callback("Failed: invalid verification code")
-        return False
+        return False, phone_code_hash
 
     log_callback("Telegram sign-in successful")
-    return True
+    return True, None
 
 
 async def run_send_pipeline(
@@ -294,18 +299,20 @@ async def run_send_pipeline(
     banner_bytes: Optional[bytes],
     tg_code: str,
     tg_password: str,
+    phone_code_hash: Optional[str],
     log_callback,
-) -> bool:
+) -> tuple[bool, Optional[str]]:
     session_file = str(session_path_for_phone(phone))
     client = TelegramClient(session_file, api_id, api_hash)
     fail_streak = 0
 
     try:
         await client.connect()
-        if not await ensure_client_authorized(
-            client, phone, tg_code, tg_password, log_callback
-        ):
-            return False
+        authorized, pending_hash = await ensure_client_authorized(
+            client, phone, tg_code, tg_password, phone_code_hash, log_callback
+        )
+        if not authorized:
+            return False, pending_hash
 
         log_callback("Sending to customers (anti-ban mode enabled)…")
 
@@ -384,7 +391,7 @@ async def run_send_pipeline(
     finally:
         await client.disconnect()
 
-    return True
+    return True, None
 
 
 def main() -> None:
@@ -531,6 +538,7 @@ def main() -> None:
 
     if submitted:
         st.session_state.send_logs = []
+        st.session_state.pop("phone_code_hash", None)
         st.session_state.job_params = {
             "api_id": int(api_id),
             "api_hash": api_hash.strip(),
@@ -556,12 +564,14 @@ def main() -> None:
 
     tg_code = st.session_state.get("tg_code", "") or ""
     tg_pwd = st.session_state.get("tg_pwd", "") or ""
+    phone_code_hash = st.session_state.get("phone_code_hash") or None
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     finished = False
+    pending_hash: Optional[str] = None
     try:
-        finished = loop.run_until_complete(
+        finished, pending_hash = loop.run_until_complete(
             run_send_pipeline(
                 api_id=job["api_id"],
                 api_hash=job["api_hash"],
@@ -572,11 +582,17 @@ def main() -> None:
                 banner_bytes=job["banner_bytes"],
                 tg_code=tg_code,
                 tg_password=tg_pwd,
+                phone_code_hash=phone_code_hash,
                 log_callback=append_log,
             )
         )
     finally:
         loop.close()
+
+    if pending_hash:
+        st.session_state.phone_code_hash = pending_hash
+    elif finished:
+        st.session_state.pop("phone_code_hash", None)
 
     if finished:
         append_log("Done.")
