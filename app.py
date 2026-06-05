@@ -125,11 +125,23 @@ def normalize_excel_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def row_username(row: pd.Series) -> str:
-    return str(row.get("username", "") or "").strip()
+    v = row.get("username", "")
+    if v is None or pd.isna(v):
+        return ""
+    s = str(v).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    return s
 
 
 def row_name(row: pd.Series) -> str:
-    return str(row.get("name", "") or "").strip()
+    v = row.get("name", "")
+    if v is None or pd.isna(v):
+        return ""
+    s = str(v).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    return s
 
 
 def row_customer_phone(row: pd.Series) -> str:
@@ -241,9 +253,15 @@ async def resolve_and_send(
             # Wrap bytes with a filename so Telegram renders it as a photo.
             buf = io.BytesIO(banner_bytes)
             buf.name = banner_name or "banner.jpg"
-            await client.send_file(entity, buf, caption=message, force_document=False)
+            await client.send_file(
+                entity,
+                buf,
+                caption=message,
+                force_document=False,
+                parse_mode="md",
+            )
         else:
-            await client.send_message(entity, message)
+            await client.send_message(entity, message, parse_mode="md")
     except PeerFloodError as exc:
         raise SendHalt(
             "PeerFloodError: Telegram flagged this account as too active. "
