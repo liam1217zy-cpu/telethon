@@ -1,6 +1,7 @@
 """
 Telegram Outreach Console (Streamlit + Telethon)
 Anti-ban: slow sends, daily caps, dedup list, halt on official flood signals.
+Optimized with humanlike typing dynamics and dead-phone search obfuscation.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import json
 import logging
 import random
 import re
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -149,8 +151,6 @@ def row_customer_phone(row: pd.Series) -> str:
 
 
 def is_effectively_empty_row(row: pd.Series) -> bool:
-    # When Excel has leftover formatting, pandas may load many "blank" rows
-    # full of NaN. Treat those as non-data and skip silently.
     return not (row_customer_phone(row) or row_name(row) or row_username(row))
 
 
@@ -251,12 +251,23 @@ async def resolve_and_send(
     if not contact:
         raise ValueError("Missing customer phone number in this row")
 
+    # 1. 第一步：尝试解析账号（这里最容易报 ValueError，即手机号没注册或搜不到）
     entity = await client.get_entity(contact)
 
+    # 2. 第二步：成功解析后，开始模拟人类发信行为
+    # 模拟手有点滑、看对话框、预备发送的延迟 (2.5 到 4.5秒)
+    await asyncio.sleep(random.uniform(2.5, 4.5))
+
     try:
+        # 向系统和用户宣告：“正在输入/打字中...”
+        async with client.action(entity, "typing"):
+            # 根据文案的长度计算真实的打字耗时（字数越多，打字越久，每字约0.15s~0.25s）
+            typing_delay = len(message) * random.uniform(0.15, 0.25)
+            # 限制打字时长不要超过12秒，防止等太久
+            typing_delay = min(typing_delay, 12.0)
+            await asyncio.sleep(typing_delay)
+
         if banner_bytes:
-            # If we pass raw bytes, Telethon may treat it as a generic document.
-            # Wrap bytes with a filename so Telegram renders it as a photo.
             buf = io.BytesIO(banner_bytes)
             buf.name = banner_name or "banner.jpg"
             await client.send_file(
@@ -268,6 +279,7 @@ async def resolve_and_send(
             )
         else:
             await client.send_message(entity, message, parse_mode="md")
+
     except PeerFloodError as exc:
         raise SendHalt(
             "PeerFloodError: Telegram flagged this account as too active. "
@@ -396,8 +408,15 @@ async def run_send_pipeline(
                 log_callback("Emergency stop to protect your account. Retry tomorrow.")
                 break
             except ValueError as exc:
-                # Entity not found — phone not on Telegram or not reachable; skip silently
+                # 🎯 核心防封逻辑修改：查无此号或由于隐私搜不到
                 log_callback(f"Skipped {label}: {exc}")
+                
+                # 遇到死号，在记录到去重文件之前，强制让脚本原地“伪装装死”休息 15 到 35 秒。
+                # 这样可以防止连续几个死号在一瞬间被扫完，导致服务器判定你在恶意盲扫。
+                dead_delay = random.randint(15, 35)
+                log_callback(f"Antispam Jitter: Random pause {dead_delay}s to obfuscate search frequency…")
+                await asyncio.sleep(dead_delay)
+                
             except Exception as exc:
                 fail_streak += 1
                 log_callback(f"Failed: {type(exc).__name__} — {exc}")
@@ -410,6 +429,7 @@ async def run_send_pipeline(
                 log_callback(f"Cooling down {delay}s after failure…")
                 await asyncio.sleep(delay)
             finally:
+                # 无论这个号是成功发送，还是撞墙的死号，均写进本地去重，下次绝不重试。
                 append_sent_target(target_key)
                 sent_set.add(target_key)
 
