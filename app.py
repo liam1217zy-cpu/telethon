@@ -1,5 +1,5 @@
 """
-Telegram Outreach Console (Streamlit + Telethon)
+Telegram Outreach Console (Streamlit + Telethon)maa
 Anti-ban: slow sends, daily caps, dedup list, halt on official flood signals.
 Optimized with humanlike typing dynamics, spintax variations, and unique hash randomization.
 """
@@ -558,7 +558,7 @@ def main() -> None:
                 st.code(
                     build_message(
                         sample_name, 
-                        "{Max|Alex|Manager Max}", 
+                        "{Max|Alex| Max}", 
                         "We prepared {a surprise bonus|exclusive free rewards|an invitation gift} for you this June! Login {today|now} to check."
                     ),
                     language=None,
