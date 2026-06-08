@@ -1,7 +1,7 @@
 """
 Telegram Outreach Console (Streamlit + Telethon)
 Anti-ban: slow sends, daily caps, dedup list, halt on official flood signals.
-Optimized with humanlike typing dynamics and dead-phone search obfuscation.
+Optimized with humanlike typing dynamics, spintax variations, and unique hash randomization.
 """
 
 from __future__ import annotations
@@ -56,15 +56,58 @@ class SendHalt(Exception):
         self.cooldown_sec = cooldown_sec
 
 
+def parse_spintax(text: str) -> str:
+    """
+    解析文本中的 Spintax 语法。
+    例如将 "{Hi|Hello} {friend|bro}" 随机转换为 "Hi bro" 或 "Hello friend"
+    """
+    pattern = re.compile(r"\{([^{}]+)\}")
+    while True:
+        match = pattern.search(text)
+        if not match:
+            break
+        options = match.group(1).split("|")
+        text = text.replace(match.group(0), random.choice(options), 1)
+    return text
+
+
 def build_message(name: str, signature: str, promo_body: str) -> str:
-    """Greeting uses Excel `name`; `username` is never included in the message."""
+    """Greeting uses Excel `name`; Text variations applied to avoid blueprint text banning."""
     display_name = (name or "Customer").strip()
-    sig = (signature or "Support").strip()
-    body = (promo_body or "").strip()
-    lines = [f"Hi Mr/Ms {display_name}!", f"This is {sig}."]
-    if body:
+    
+    # 针对签名和正文启用 SpinTax 解析
+    sig_parsed = parse_spintax(signature or "Support").strip()
+    body_parsed = parse_spintax(promo_body or "").strip()
+    
+    # 1. 自动对开头问候语进行随机变形
+    greeting_templates = [
+        f"Hi Mr/Ms {display_name}!",
+        f"Hello Mr/Ms {display_name},",
+        f"Good day Mr/Ms {display_name}!",
+        f"Hi {display_name},"
+    ]
+    greeting = random.choice(greeting_templates)
+    
+    # 2. 自动对身份介绍语进行随机变形
+    intro_templates = [
+        f"This is {sig_parsed}.",
+        f"I'm {sig_parsed} here.",
+        f"{sig_parsed} here.",
+    ]
+    intro = random.choice(intro_templates)
+    
+    lines = [greeting, intro]
+    if body_parsed:
         lines.append("")
-        lines.append(body)
+        lines.append(body_parsed)
+        
+    # 3. 🛡️ 【微观字节防封特征锁】
+    # 即使大段正文恰好抽到相同的组合，末尾的唯一识别码也会让整条消息的字节数据完全不同，打碎特征码过滤。
+    abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    random_hash = "".join(random.choices(abc, k=4))
+    lines.append("")
+    lines.append(f"`[ID: #{random_hash}]`") # 以小字代码块格式附带在最底部
+    
     return "\n".join(lines)
 
 
@@ -182,7 +225,10 @@ def load_sent_set() -> set[str]:
 
 def append_sent_target(target: str) -> None:
     key = target.strip().lower()
-    if not key or key in load_sent_set():
+    if not key:
+        return
+    current_set = load_sent_set()
+    if key in current_set:
         return
     with open(SENT_LIST_PATH, "a", encoding="utf-8") as f:
         f.write(key + "\n")
@@ -251,19 +297,16 @@ async def resolve_and_send(
     if not contact:
         raise ValueError("Missing customer phone number in this row")
 
-    # 1. 第一步：尝试解析账号（这里最容易报 ValueError，即手机号没注册或搜不到）
     entity = await client.get_entity(contact)
 
-    # 2. 第二步：成功解析后，开始模拟人类发信行为
-    # 模拟手有点滑、看对话框、预备发送的延迟 (2.5 到 4.5秒)
+    # 模拟手滑、停顿、看对话框的预备动作 (2.5 到 4.5秒)
     await asyncio.sleep(random.uniform(2.5, 4.5))
 
     try:
-        # 向系统和用户宣告：“正在输入/打字中...”
+        # 触发打字中状态
         async with client.action(entity, "typing"):
-            # 根据文案的长度计算真实的打字耗时（字数越多，打字越久，每字约0.15s~0.25s）
+            # 根据动态变化后的最终文本长度，实时计算打字机耗时
             typing_delay = len(message) * random.uniform(0.15, 0.25)
-            # 限制打字时长不要超过12秒，防止等太久
             typing_delay = min(typing_delay, 12.0)
             await asyncio.sleep(typing_delay)
 
@@ -390,15 +433,19 @@ async def run_send_pipeline(
                 continue
 
             name = row_name(row)
+            
+            # 🎯 每次实时循环都重新构建具有高度随机性的文本内容
             message = build_message(name, signature, promo_body)
             label = format_customer_label(row)
 
             success = False
             try:
+                sent_set.add(target_key)
                 await resolve_and_send(client, row, message, banner_bytes, banner_name)
                 success = True
                 fail_streak = 0
                 log_callback(f"Sent to {label}")
+                
             except SendHalt as halt:
                 log_callback(halt.message)
                 if halt.cooldown_sec > 0:
@@ -407,12 +454,10 @@ async def run_send_pipeline(
                     await asyncio.sleep(wait)
                 log_callback("Emergency stop to protect your account. Retry tomorrow.")
                 break
-            except ValueError as exc:
-                # 🎯 核心防封逻辑修改：查无此号或由于隐私搜不到
-                log_callback(f"Skipped {label}: {exc}")
                 
-                # 遇到死号，在记录到去重文件之前，强制让脚本原地“伪装装死”休息 15 到 35 秒。
-                # 这样可以防止连续几个死号在一瞬间被扫完，导致服务器判定你在恶意盲扫。
+            except ValueError as exc:
+                log_callback(f"Skipped {label}: {exc}")
+                append_sent_target(target_key)
                 dead_delay = random.randint(15, 35)
                 log_callback(f"Antispam Jitter: Random pause {dead_delay}s to obfuscate search frequency…")
                 await asyncio.sleep(dead_delay)
@@ -420,6 +465,8 @@ async def run_send_pipeline(
             except Exception as exc:
                 fail_streak += 1
                 log_callback(f"Failed: {type(exc).__name__} — {exc}")
+                append_sent_target(target_key)
+                
                 if fail_streak >= CONSECUTIVE_FAIL_LIMIT:
                     log_callback(
                         f"{fail_streak} consecutive failures — stopping to avoid spam flags."
@@ -428,8 +475,8 @@ async def run_send_pipeline(
                 delay = random.randint(FAIL_DELAY_MIN_SEC, FAIL_DELAY_MAX_SEC)
                 log_callback(f"Cooling down {delay}s after failure…")
                 await asyncio.sleep(delay)
+                
             finally:
-                # 无论这个号是成功发送，还是撞墙的死号，均写进本地去重，下次绝不重试。
                 append_sent_target(target_key)
                 sent_set.add(target_key)
 
@@ -462,8 +509,7 @@ def main() -> None:
     )
     st.title("📨 Telegram Outreach Console")
     st.caption(
-        "Slow sends · daily cap · dedup list · stops on PeerFlood / FloodWait. "
-        "Message only customers who opted in."
+        "Slow sends · daily cap · dedup list · dynamic content mixing · stops on PeerFlood / FloodWait. "
     )
 
     with st.sidebar:
@@ -473,6 +519,8 @@ def main() -> None:
 - Max **{DAILY_SEND_LIMIT}** messages per account per day
 - **{DELAY_MIN_SEC // 60}–{DELAY_MAX_SEC // 60}** min random delay after each success
 - Each customer tried **once** (`sent_list.txt`)
+- SpinTax text mixing `{'{A|B}'}` support enabled
+- Microscopic dynamic hash locker appended
 - **Immediate stop** on `PeerFlood` / `FloodWait`
 - Stop after **{CONSECUTIVE_FAIL_LIMIT}** consecutive failures
             """
@@ -506,9 +554,13 @@ def main() -> None:
             st.dataframe(preview[show_cols].head(8), use_container_width=True)
             if "name" in preview.columns and len(preview) > 0:
                 sample_name = row_name(preview.iloc[0]) or "Customer"
-                st.markdown("**Message example (first row):**")
+                st.markdown("**Message Content Sandbox (Example Generated Variation):**")
                 st.code(
-                    build_message(sample_name, "Your Name", "Your promotion text…"),
+                    build_message(
+                        sample_name, 
+                        "{Max|Alex|Manager Max}", 
+                        "We prepared {a surprise bonus|exclusive free rewards|an invitation gift} for you this June! Login {today|now} to check."
+                    ),
                     language=None,
                 )
             if "phone" not in preview.columns:
@@ -536,14 +588,14 @@ def main() -> None:
             )
         with col2:
             signature = st.text_input(
-                "Your name",
-                placeholder="Alex",
-                help='Appears as: "This is Alex."',
+                "Your name (Supports SpinTax, e.g. {Max|Alex})",
+                placeholder="Max",
+                help='Appears randomly dynamically mixed into greetings.',
             )
             promo_body = st.text_area(
-                "Message content",
+                "Message content (Supports SpinTax, e.g. {bonus|gift})",
                 height=160,
-                placeholder="Promotion or notice text — sent after the greeting.",
+                placeholder="Promotion or notice text — supports nested spin combinations.",
             )
 
         submitted = st.form_submit_button("Start sending", type="primary")
